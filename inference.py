@@ -87,7 +87,7 @@ def main():
     logging_task.start_logging(period=0.1)
 
     normalize_tensor = torch.tensor(255.0).to(device)
-    cv2.namedWindow('video', cv2.WINDOW_AUTOSIZE | cv2.WINDOW_KEEPRATIO)
+    cv2.namedWindow(winname='video', flags=cv2.WINDOW_NORMAL)
 
     while video.isOpened():
         prev_time = time.time()
