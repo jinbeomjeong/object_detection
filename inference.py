@@ -90,7 +90,6 @@ def main():
     cv2.namedWindow(winname='video', flags=cv2.WINDOW_NORMAL)
 
     while video.isOpened():
-        prev_time = time.time()
         ret, img0 = video.read()
 
         if ret:
@@ -132,6 +131,7 @@ def main():
                     annotator.box_label(xyxy, label, color=colors(int(cls)))
 
             fps = 1/(time.time() - prev_time)
+            prev_time = time.time()
             cv2.putText(img0, f'Elapsed Time(sec): {elapsed_time: .2f}', (5, 20), font, 0.5, [0, 0, 255], 1)
             cv2.putText(img0, f'Process Speed(FPS): {fps: .2f}', (5, 40), font, 0.5, [0, 0, 255], 1)
             cv2.putText(img0, f'Frame: {ref_frame}', (5, 60), font, 0.5, [0, 0, 255], 1)
