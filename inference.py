@@ -1,4 +1,4 @@
-import time, cv2, torch, threading, argparse
+import time, cv2, torch, threading, argparse, os, re, subprocess
 import torch.backends.cudnn as cudnn
 import numpy as np 
 import pandas as pd
@@ -9,7 +9,25 @@ from utils.general import check_img_size, non_max_suppression, scale_coords
 from utils.plots import Annotator, colors
 from utils.torch_utils import select_device 
 from utils.accessory_lib import system_info
-from utils import thermal_zone
+
+
+def get_thermal_zone_paths():
+    thermal_path = '/sys/devices/virtual/thermal/'
+
+    return [os.path.join(thermal_path, m.group(0)) for m in [re.search('thermal_zone[0-9]', d)
+                                                             for d in os.listdir(thermal_path)] if m]
+
+
+def read_sys_value(pth):
+    return subprocess.check_output(['cat', pth]).decode('utf-8').rstrip('\n')
+
+
+def get_thermal_zone_names(zone_paths):
+    return [read_sys_value(os.path.join(p, 'type')) for p in zone_paths]
+
+
+def get_thermal_zone_temps(zone_paths):
+    return [int(read_sys_value(os.path.join(p, 'temp'))) for p in zone_paths]
 
 
 class LoggingFile:
@@ -34,14 +52,14 @@ class LoggingFile:
 class JetsonTemperature:
     def __init__(self):
         self.zone_paths_modify = []
-        self.zone_paths = thermal_zone.get_thermal_zone_paths()
+        self.zone_paths = get_thermal_zone_paths()
         self.zone_paths_modify.append(self.zone_paths[1])
         self.zone_paths_modify.append(self.zone_paths[4])
-        self.zone_names = thermal_zone.get_thermal_zone_names(self.zone_paths_modify)
+        self.zone_names = get_thermal_zone_names(self.zone_paths_modify)
         self.zone_temps = np.zeros(shape=len(self.zone_names), dtype=np.float64)
 
     def get_temps(self):
-        zone_temps_raw = thermal_zone.get_thermal_zone_temps(self.zone_paths_modify)
+        zone_temps_raw = get_thermal_zone_temps(self.zone_paths_modify)
         for i, temp_raw in enumerate(zone_temps_raw):
             self.zone_temps[i] = np.divide(temp_raw, 1000.0)
 
@@ -58,7 +76,7 @@ jetson_temp = JetsonTemperature()
 def read_jetson_temp():
     while True:
         jetson_temp.get_temps()
-        time.sleep(5)
+        time.sleep(2)
 
 
 jetson_temp_task = threading.Thread(target=read_jetson_temp)
@@ -132,7 +150,6 @@ def main():
 
     while True:
         img0 = cv2.imread(source)
-        prev_time = time.time()
         ref_frame = ref_frame + 1
 
         # Padded resize
@@ -171,6 +188,8 @@ def main():
                 annotator.box_label(xyxy, label, color=colors(int(cls)))
 
         fps = 1/(time.time() - prev_time)
+        prev_time = time.time()
+
         cv2.putText(img0, f'Elapsed Time(sec): {elapsed_time: .2f}', (5, 20), font, 0.5, [0, 0, 255], 1)
         cv2.putText(img0, f'Process Speed(FPS): {fps: .2f}', (5, 40), font, 0.5, [0, 0, 255], 1)
         cv2.putText(img0, f'Frame: {ref_frame}', (5, 60), font, 0.5, [0, 0, 255], 1)
