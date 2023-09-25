@@ -9,6 +9,7 @@ from utils.general import check_img_size, non_max_suppression, scale_coords
 from utils.plots import Annotator, colors
 from utils.torch_utils import select_device 
 from utils.accessory_lib import system_info
+from utils import thermal_zone
 
 
 class LoggingFile:
@@ -21,12 +22,48 @@ class LoggingFile:
     def start_logging(self, period=0.1): 
         logging_data = pd.DataFrame({'1': time.strftime('%Y/%m/%d', time.localtime(time.time())),
                                      '2': time.strftime('%H:%M:%S', time.localtime(time.time())),
-                                     '3': round(elapsed_time, 2), '4': ref_frame, '5': round(fps, 2)}, index=[0])
+                                     '3': round(elapsed_time, 2), '4': ref_frame, '5': round(fps, 2),
+                                     '6': jetson_temp.read_temps()[0], '7': jetson_temp.read_temps()[1]}, index=[0])
+
         logging_data.to_csv(self.logging_file_path, mode='a', header=False) 
         logging_thread = threading.Timer(period, self.start_logging, (period, )) 
         logging_thread.daemon = True 
         logging_thread.start() 
 
+
+class JetsonTemperature:
+    def __init__(self):
+        self.zone_paths_modify = []
+        self.zone_paths = thermal_zone.get_thermal_zone_paths()
+        self.zone_paths_modify.append(self.zone_paths[1])
+        self.zone_paths_modify.append(self.zone_paths[4])
+        self.zone_names = thermal_zone.get_thermal_zone_names(self.zone_paths_modify)
+        self.zone_temps = np.zeros(shape=len(self.zone_names), dtype=np.float64)
+
+    def get_temps(self):
+        zone_temps_raw = thermal_zone.get_thermal_zone_temps(self.zone_paths_modify)
+        for i, temp_raw in enumerate(zone_temps_raw):
+            self.zone_temps[i] = np.divide(temp_raw, 1000.0)
+
+    def read_temps(self):
+        return self.zone_temps
+
+    def read_zone_names(self):
+        return self.zone_names
+
+
+jetson_temp = JetsonTemperature()
+
+
+def read_jetson_temp():
+    while True:
+        jetson_temp.get_temps()
+        time.sleep(5)
+
+
+jetson_temp_task = threading.Thread(target=read_jetson_temp)
+jetson_temp_task.daemon = True
+jetson_temp_task.start()
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--fp16", type=int, default=0)
@@ -41,10 +78,10 @@ start_time = time.time()
 
 @torch.no_grad()
 def main():
-    global elapsed_time, fps, ref_frame, prev_time, start_time
-    system_info()
+    global elapsed_time, fps, ref_frame, prev_time, start_time, zone_temps
 
-    source = "D:\\video\\urban_street.mp4"
+    system_info()
+    source = "./car.jpg"
     weights = "./weights/yolov5s.pt"
     img_size = 640
     CONF_THRES = 0.4
@@ -76,77 +113,75 @@ def main():
     prev_time = time.time()
 
     # Load image
-    video = cv2.VideoCapture(source)
     font = cv2.FONT_HERSHEY_COMPLEX
     print(f'[3/3] Video Resource Loaded {time.time()-prev_time:.2f}sec')
     start_time = time.time()
 
     # logging file threading start
-    logging_header = pd.DataFrame(columns=['absolute_data', 'absolute_time', 'time(sec)', 'frame', 'throughput(fps)'])
+    logging_header_names = ['absolute_data', 'absolute_time', 'time(sec)', 'frame', 'throughput(fps)']
+
+    for zone_name in jetson_temp.read_zone_names():
+        logging_header_names.append(zone_name)
+
+    logging_header = pd.DataFrame(columns=logging_header_names)
     logging_task = LoggingFile(logging_header, file_name='logging_data')
     logging_task.start_logging(period=0.1)
 
     normalize_tensor = torch.tensor(255.0).to(device)
     cv2.namedWindow(winname='video', flags=cv2.WINDOW_NORMAL)
 
-    while video.isOpened():
+    while True:
+        img0 = cv2.imread(source)
         prev_time = time.time()
-        ret, img0 = video.read()
+        ref_frame = ref_frame + 1
 
-        if ret:
-            ref_frame = ref_frame + 1
+        # Padded resize
+        img = letterbox(img0, img_size_chk, stride=stride)[0]
 
-            # Padded resize
-            img = letterbox(img0, img_size_chk, stride=stride)[0]
+        # Convert
+        img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
+        img = np.ascontiguousarray(img)
 
-            # Convert
-            img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
-            img = np.ascontiguousarray(img)
+        img = torch.from_numpy(img).to(device)
+        img = img.half() if half else img.float()  # uint8 to fp16/32
+        img = torch.divide(img, normalize_tensor)
 
-            img = torch.from_numpy(img).to(device)
-            img = img.half() if half else img.float()  # uint8 to fp16/32
-            img = torch.divide(img, normalize_tensor)
+        if img.ndimension() == 3:
+            img = img.unsqueeze(0)
 
-            if img.ndimension() == 3:
-                img = img.unsqueeze(0)
+        # Inference
+        pred = model(img, augment=False)[0]
 
-            # Inference
-            pred = model(img, augment=False)[0]
+        # Apply NMS
+        pred = non_max_suppression(pred, CONF_THRES, IOU_THRES, classes=None, agnostic=False)
 
-            # Apply NMS
-            pred = non_max_suppression(pred, CONF_THRES, IOU_THRES, classes=None, agnostic=False)
+        # Process detections
+        det = pred[0]
+        s = ''
+        s += '%gx%g ' % img.shape[2:]  # print string
+        annotator = Annotator(img0, line_width=1, example=str(names))
 
-            # Process detections
-            det = pred[0]
-            s = ''
-            s += '%gx%g ' % img.shape[2:]  # print string
-            annotator = Annotator(img0, line_width=1, example=str(names))
+        if len(det):
+            # Rescale boxes from img_size to img0 size
+            det[:, :4] = scale_coords(img.shape[2:], det[:, :4], img0.shape).round()
 
-            if len(det):
-                # Rescale boxes from img_size to img0 size
-                det[:, :4] = scale_coords(img.shape[2:], det[:, :4], img0.shape).round()
+            # Write results
+            for *xyxy, conf, cls in reversed(det):
+                label = f'{names[int(cls)]} {conf:.2f}'
+                annotator.box_label(xyxy, label, color=colors(int(cls)))
 
-                # Write results
-                for *xyxy, conf, cls in reversed(det):
-                    label = f'{names[int(cls)]} {conf:.2f}'
-                    annotator.box_label(xyxy, label, color=colors(int(cls)))
+        fps = 1/(time.time() - prev_time)
+        cv2.putText(img0, f'Elapsed Time(sec): {elapsed_time: .2f}', (5, 20), font, 0.5, [0, 0, 255], 1)
+        cv2.putText(img0, f'Process Speed(FPS): {fps: .2f}', (5, 40), font, 0.5, [0, 0, 255], 1)
+        cv2.putText(img0, f'Frame: {ref_frame}', (5, 60), font, 0.5, [0, 0, 255], 1)
 
-            fps = 1/(time.time() - prev_time)
-            cv2.putText(img0, f'Elapsed Time(sec): {elapsed_time: .2f}', (5, 20), font, 0.5, [0, 0, 255], 1)
-            cv2.putText(img0, f'Process Speed(FPS): {fps: .2f}', (5, 40), font, 0.5, [0, 0, 255], 1)
-            cv2.putText(img0, f'Frame: {ref_frame}', (5, 60), font, 0.5, [0, 0, 255], 1)
-
-            # Stream results
-            cv2.imshow("video", img0)
-            elapsed_time = time.time()-start_time
-
-        else:
-            break
+        # Stream results
+        cv2.imshow("video", img0)
+        elapsed_time = time.time()-start_time
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
-    video.release()
     cv2.destroyAllWindows()
     print('Video Play Done!')
 
