@@ -193,6 +193,8 @@ def main():
         cv2.putText(img0, f'Elapsed Time(sec): {elapsed_time: .2f}', (5, 20), font, 0.5, [0, 0, 255], 1)
         cv2.putText(img0, f'Process Speed(FPS): {fps: .2f}', (5, 40), font, 0.5, [0, 0, 255], 1)
         cv2.putText(img0, f'Frame: {ref_frame}', (5, 60), font, 0.5, [0, 0, 255], 1)
+        cv2.putText(img0, f'CPU Temp: {jetson_temp.read_temps()[0]}', (5, 80), font, 0.5, [0, 0, 255], 1)
+        cv2.putText(img0, f'GPU Temp: {jetson_temp.read_temps()[1]}', (5, 100), font, 0.5, [0, 0, 255], 1)
 
         # Stream results
         cv2.imshow("video", img0)
