@@ -59,15 +59,12 @@ def main():
     prev_time = time.time()
     
     # Load model
-    model = DetectMultiBackend(weights, device=device, fp16=False)
+    model = DetectMultiBackend(weights, device=device, fp16=half)
     model.eval()
 
     # Get names and colors
     stride, names = model.stride, model.names
     img_size_chk = check_img_size(img_size, s=stride)  # check img_size
-
-    if half:
-        model.half()  # to FP16
 
     # Run inference
     model.warmup(imgsz=(1, 3, img_size_chk, img_size_chk))  # warmup
