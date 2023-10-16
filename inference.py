@@ -3,12 +3,12 @@ import torch.backends.cudnn as cudnn
 import numpy as np 
 import pandas as pd
 
-from models.experimental import attempt_load
 from utils.augmentations import letterbox
 from utils.general import check_img_size, non_max_suppression, scale_coords 
 from utils.plots import Annotator, colors
 from utils.torch_utils import select_device 
 from utils.accessory_lib import system_info
+from models.common import DetectMultiBackend
 
 
 class LoggingFile:
@@ -44,8 +44,8 @@ def main():
     global elapsed_time, fps, ref_frame, prev_time, start_time
     system_info()
 
-    source = "D:\\video\\urban_street.mp4"
-    weights = "./weights/yolov5s.pt"
+    source = "./video.mp4"
+    weights = "./weights/yolov5s.torchscript"
     img_size = 640
     CONF_THRES = 0.4
     IOU_THRES = 0.45
@@ -59,19 +59,19 @@ def main():
     prev_time = time.time()
     
     # Load model
-    model = attempt_load(weights, device)  # load FP32 model
+    model = DetectMultiBackend(weights, device=device, fp16=False)
     model.eval()
-    stride = int(model.stride.max())  # model stride
+
+    # Get names and colors
+    stride, names = model.stride, model.names
     img_size_chk = check_img_size(img_size, s=stride)  # check img_size
 
     if half:
         model.half()  # to FP16
 
-    # Get names and colors
-    names = model.module.names if hasattr(model, 'module') else model.names
-
     # Run inference
-    model(torch.zeros(1, 3, img_size_chk, img_size_chk).to(device).type_as(next(model.parameters())))  # run once
+    model.warmup(imgsz=(1, 3, img_size_chk, img_size_chk))  # warmup
+
     print(f'[2/3] Yolov5 Detector Model Loaded {time.time()-prev_time:.2f}sec')
     prev_time = time.time()
 
@@ -96,7 +96,7 @@ def main():
             ref_frame = ref_frame + 1
 
             # Padded resize
-            img = letterbox(img0, img_size_chk, stride=stride)[0]
+            img = letterbox(img0, img_size_chk, stride=stride, auto=False)[0]
 
             # Convert
             img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
@@ -110,15 +110,13 @@ def main():
                 img = img.unsqueeze(0)
 
             # Inference
-            pred = model(img, augment=False)[0]
+            pred = model(img, augment=False)
 
             # Apply NMS
             pred = non_max_suppression(pred, CONF_THRES, IOU_THRES, classes=None, agnostic=False)
 
             # Process detections
             det = pred[0]
-            s = ''
-            s += '%gx%g ' % img.shape[2:]  # print string
             annotator = Annotator(img0, line_width=1, example=str(names))
 
             if len(det):
