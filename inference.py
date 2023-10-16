@@ -44,17 +44,23 @@ def main():
     global elapsed_time, fps, ref_frame, prev_time, start_time
     system_info()
 
+    # Initialize
     source = "./video.mp4"
     weights = "./weights/yolov5s.torchscript"
     img_size = 640
     CONF_THRES = 0.4
     IOU_THRES = 0.45
     half = args.fp16
+
+    logging_header = pd.DataFrame(columns=['absolute_data', 'absolute_time', 'time(sec)', 'frame', 'throughput(fps)'])
+    logging_task = LoggingFile(logging_header, file_name='logging_data')
+
+    device = select_device('')
     cudnn.benchmark = True
     torch.backends.cuda.matmul.allow_tf32 = False
 
-    # Initialize
-    device = select_device('')
+    normalize_tensor = torch.tensor(255.0).to(device)
+    normalize_tensor = normalize_tensor.half() if half else normalize_tensor.float()  # uint8 to fp16/32
     print(f'[1/3] Device Initialized {time.time()-prev_time:.2f}sec')
     prev_time = time.time()
     
@@ -74,17 +80,13 @@ def main():
 
     # Load image
     video = cv2.VideoCapture(source)
+    cv2.namedWindow(winname='video', flags=cv2.WINDOW_NORMAL)
     font = cv2.FONT_HERSHEY_COMPLEX
     print(f'[3/3] Video Resource Loaded {time.time()-prev_time:.2f}sec')
     start_time = time.time()
 
     # logging file threading start
-    logging_header = pd.DataFrame(columns=['absolute_data', 'absolute_time', 'time(sec)', 'frame', 'throughput(fps)'])
-    logging_task = LoggingFile(logging_header, file_name='logging_data')
     logging_task.start_logging(period=0.1)
-
-    normalize_tensor = torch.tensor(255.0).to(device)
-    cv2.namedWindow(winname='video', flags=cv2.WINDOW_NORMAL)
 
     while video.isOpened():
         ret, img0 = video.read()
